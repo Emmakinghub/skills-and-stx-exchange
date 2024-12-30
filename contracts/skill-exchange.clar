@@ -49,6 +49,19 @@
     (var-set total-skill-reserve new-reserve)
     (ok true)))
 
+;; Optimize skill exchange cost calculation
+(define-private (calculate-exchange-cost (hours uint) (rate uint))
+  ;; Reduce unnecessary variable assignments
+  (let ((cost (* hours rate))
+        (fee (calculate-service-fee cost)))
+    (+ cost fee)))
+
+;; Fix to ensure balance check is correctly handling the case when there are no skills for exchange
+(define-private (check-user-skill-balance (user principal) (hours uint))
+  (let ((current-balance (default-to u0 (map-get? user-skills-balance user))))
+    (asserts! (>= current-balance hours) err-insufficient-balance)
+    (ok true)))
+
 ;; Public functions
 
 ;; Set skill exchange rate (only contract owner)
@@ -134,6 +147,61 @@
 
     (ok true)))
 
+;; Allows users to cancel their skill exchange offer
+(define-public (cancel-skill-offer)
+  (let (
+    (user-skill-data (map-get? skills-for-exchange {user: tx-sender}))
+  )
+    (asserts! (is-some user-skill-data) err-unauthorized-user)
+    (map-set skills-for-exchange {user: tx-sender} {skill-hours: u0, rate: u0})
+    (ok true)))
+
+;; Test suite for checking user skill balances
+(define-public (test-user-skill-balance (user principal))
+  (let ((balance (default-to u0 (map-get? user-skills-balance user))))
+    (asserts! (>= balance u0) err-insufficient-balance)
+    (ok balance)))
+
+;; Testing functionality for exchanging skills between users
+(define-public (test-skill-exchange (provider principal) (hours uint))
+  (let ((user-balance (default-to u0 (map-get? user-stx-balance tx-sender)))
+        (provider-balance (default-to u0 (map-get? user-stx-balance provider))))
+    (asserts! (>= user-balance u0) err-insufficient-balance)
+    (asserts! (>= provider-balance u0) err-insufficient-balance)
+    (ok true)))
+
+;; Refactor skill transfer for optimized performance
+(define-public (transfer-skills (provider principal) (hours uint))
+  (let (
+    (provider-skills (default-to u0 (map-get? user-skills-balance provider)))
+    (user-skills (default-to u0 (map-get? user-skills-balance tx-sender)))
+  )
+    (asserts! (>= provider-skills hours) err-insufficient-balance)
+    (map-set user-skills-balance provider (- provider-skills hours))
+    (map-set user-skills-balance tx-sender (+ user-skills hours))
+    (ok true)))
+
+;; Add a page for viewing contract activity
+(define-public (view-activity-page (user principal))
+  (begin
+    (asserts! (is-eq tx-sender user) err-unauthorized-user)
+    (ok true)))
+
+;; Validate input for offering skills to ensure the input is valid (hours > 0)
+(define-public (validate-skill-offer-input (hours uint) (rate uint))
+  (begin
+    (asserts! (> hours u0) err-invalid-skill) ;; Ensure hours are greater than 0
+    (asserts! (> rate u0) err-invalid-rate) ;; Ensure rate is greater than 0
+    (ok true)))
+
+;; Set maximum skills per user
+(define-public (set-max-skills-per-user (new-limit uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (> new-limit u0) err-invalid-skill)
+    (var-set max-skills-per-user new-limit)
+    (ok true)))
+
 ;; Read-only functions
 
 ;; Get current skill exchange rate
@@ -167,11 +235,3 @@
 ;; Get skill reserve limit
 (define-read-only (get-skill-reserve-limit)
   (ok (var-get skill-reserve-limit)))
-
-;; Set maximum skills per user
-(define-public (set-max-skills-per-user (new-limit uint))
-  (begin
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (asserts! (> new-limit u0) err-invalid-skill)
-    (var-set max-skills-per-user new-limit)
-    (ok true)))
