@@ -66,3 +66,112 @@
     (asserts! (<= new-fee u100) err-invalid-rate) ;; Ensure fee is not more than 100%
     (var-set service-fee new-fee)
     (ok true)))
+
+;; Set skill reserve limit (only contract owner)
+(define-public (set-skill-reserve-limit (new-limit uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (>= new-limit (var-get total-skill-reserve)) err-reserve-limit-reached)
+    (var-set skill-reserve-limit new-limit)
+    (ok true)))
+
+;; Offer skills for exchange
+(define-public (offer-skills-for-exchange (hours uint) (rate uint))
+  (let (
+    (current-balance (default-to u0 (map-get? user-skills-balance tx-sender)))
+    (current-for-exchange (get skill-hours (default-to {skill-hours: u0, rate: u0} (map-get? skills-for-exchange {user: tx-sender}))))
+    (new-for-exchange (+ hours current-for-exchange))
+  )
+    (asserts! (> hours u0) err-invalid-skill) ;; Ensure hours are greater than 0
+    (asserts! (> rate u0) err-invalid-rate) ;; Ensure rate is greater than 0
+    (asserts! (>= current-balance new-for-exchange) err-insufficient-balance)
+    (try! (update-skill-reserve (to-int hours)))
+    (map-set skills-for-exchange {user: tx-sender} {skill-hours: new-for-exchange, rate: rate})
+    (ok true)))
+
+;; Remove skills from exchange
+(define-public (remove-skills-from-exchange (hours uint))
+  (let (
+    (current-for-exchange (get skill-hours (default-to {skill-hours: u0, rate: u0} (map-get? skills-for-exchange {user: tx-sender}))))
+  )
+    (asserts! (>= current-for-exchange hours) err-insufficient-balance)
+    (try! (update-skill-reserve (to-int (- hours))))
+    (map-set skills-for-exchange {user: tx-sender} 
+             {skill-hours: (- current-for-exchange hours), rate: (get rate (default-to {skill-hours: u0, rate: u0} (map-get? skills-for-exchange {user: tx-sender})))})
+    (ok true)))
+
+;; Exchange skills for STX (user-to-user)
+(define-public (exchange-skills (provider principal) (hours uint))
+  (let (
+    (exchange-data (default-to {skill-hours: u0, rate: u0} (map-get? skills-for-exchange {user: provider})))
+    (service-cost (* hours (get rate exchange-data)))
+    (calculated-service-fee (calculate-service-fee service-cost)) ;; Renamed to avoid conflict
+    (total-cost (+ service-cost calculated-service-fee))
+    (provider-skills (default-to u0 (map-get? user-skills-balance provider)))
+    (user-balance (default-to u0 (map-get? user-stx-balance tx-sender)))
+    (provider-balance (default-to u0 (map-get? user-stx-balance provider)))
+  )
+    (asserts! (not (is-eq tx-sender provider)) err-unauthorized-user)
+    (asserts! (> hours u0) err-invalid-skill) ;; Ensure hours are greater than 0
+    (asserts! (>= (get skill-hours exchange-data) hours) err-insufficient-balance)
+    (asserts! (>= provider-skills hours) err-insufficient-balance)
+    (asserts! (>= user-balance total-cost) err-insufficient-balance)
+
+    ;; Update provider's skills balance and available skill hours
+    (map-set user-skills-balance provider (- provider-skills hours))
+    (map-set skills-for-exchange {user: provider} 
+             {skill-hours: (- (get skill-hours exchange-data) hours), rate: (get rate exchange-data)})
+
+    ;; Update user's STX and skill balance
+    (map-set user-stx-balance tx-sender (- user-balance total-cost))
+    (map-set user-skills-balance tx-sender (+ (default-to u0 (map-get? user-skills-balance tx-sender)) hours))
+
+    ;; Update provider's STX balance
+    (map-set user-stx-balance provider (+ provider-balance service-cost))
+
+    ;; Update contract owner's balance for the fee
+    (map-set user-stx-balance contract-owner (+ (default-to u0 (map-get? user-stx-balance contract-owner)) calculated-service-fee))
+
+    (ok true)))
+
+;; Read-only functions
+
+;; Get current skill exchange rate
+(define-read-only (get-skill-rate)
+  (ok (var-get skill-rate)))
+
+;; Get service fee rate
+(define-read-only (get-service-fee)
+  (ok (var-get service-fee)))
+
+;; Get user's skill balance
+(define-read-only (get-skill-balance (user principal))
+  (ok (default-to u0 (map-get? user-skills-balance user))))
+
+;; Get user's STX balance
+(define-read-only (get-stx-balance (user principal))
+  (ok (default-to u0 (map-get? user-stx-balance user))))
+
+;; Get skills available for exchange by user
+(define-read-only (get-skills-for-exchange (user principal))
+  (ok (default-to {skill-hours: u0, rate: u0} (map-get? skills-for-exchange {user: user}))))
+
+;; Get maximum skills a user can offer
+(define-read-only (get-max-skills-per-user)
+  (ok (var-get max-skills-per-user)))
+
+;; Get total skill reserve
+(define-read-only (get-total-skill-reserve)
+  (ok (var-get total-skill-reserve)))
+
+;; Get skill reserve limit
+(define-read-only (get-skill-reserve-limit)
+  (ok (var-get skill-reserve-limit)))
+
+;; Set maximum skills per user
+(define-public (set-max-skills-per-user (new-limit uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (> new-limit u0) err-invalid-skill)
+    (var-set max-skills-per-user new-limit)
+    (ok true)))
